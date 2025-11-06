@@ -1,0 +1,283 @@
+#!/bin/bash
+
+###############################################################################
+# CSV Processor - Automated Setup Script
+#
+# Este script automatiza o setup completo da infraestrutura AWS
+#
+# Uso:
+#   ./scripts/setup.sh [environment] [region]
+#
+# Exemplo:
+#   ./scripts/setup.sh dev us-east-1
+###############################################################################
+
+set -e  # Exit on error
+
+# Colors for output
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+BLUE='\033[0;34m'
+NC='\033[0m' # No Color
+
+# Configuration
+ENVIRONMENT=${1:-dev}
+AWS_REGION=${2:-us-east-1}
+PROJECT_NAME="csv-processor"
+
+###############################################################################
+# Helper Functions
+###############################################################################
+
+log_info() {
+    echo -e "${BLUE}[INFO]${NC} $1"
+}
+
+log_success() {
+    echo -e "${GREEN}[SUCCESS]${NC} $1"
+}
+
+log_warning() {
+    echo -e "${YELLOW}[WARNING]${NC} $1"
+}
+
+log_error() {
+    echo -e "${RED}[ERROR]${NC} $1"
+}
+
+check_command() {
+    if ! command -v $1 &> /dev/null; then
+        log_error "$1 não está instalado. Por favor, instale primeiro."
+        exit 1
+    fi
+}
+
+###############################################################################
+# Pre-flight Checks
+###############################################################################
+
+log_info "=== CSV Processor Setup ==="
+log_info "Environment: $ENVIRONMENT"
+log_info "Region: $AWS_REGION"
+echo ""
+
+log_info "Verificando dependências..."
+
+check_command aws
+check_command terraform
+check_command docker
+check_command jq
+
+log_success "Todas as dependências estão instaladas!"
+echo ""
+
+###############################################################################
+# AWS Configuration
+###############################################################################
+
+log_info "Verificando configuração AWS..."
+
+AWS_ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text 2>/dev/null || echo "")
+
+if [ -z "$AWS_ACCOUNT_ID" ]; then
+    log_error "AWS CLI não está configurada ou credenciais inválidas"
+    log_info "Execute: aws configure"
+    exit 1
+fi
+
+log_success "AWS Account ID: $AWS_ACCOUNT_ID"
+echo ""
+
+###############################################################################
+# Create ECR Repository
+###############################################################################
+
+REPOSITORY_NAME="${PROJECT_NAME}-${ENVIRONMENT}"
+ECR_URL="${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com/${REPOSITORY_NAME}"
+
+log_info "Criando repositório ECR: $REPOSITORY_NAME"
+
+# Check if repository exists
+if aws ecr describe-repositories --repository-names "$REPOSITORY_NAME" --region "$AWS_REGION" &> /dev/null; then
+    log_warning "Repositório ECR já existe"
+else
+    aws ecr create-repository \
+        --repository-name "$REPOSITORY_NAME" \
+        --region "$AWS_REGION" \
+        --image-scanning-configuration scanOnPush=true \
+        --encryption-configuration encryptionType=AES256 \
+        > /dev/null
+    
+    log_success "Repositório ECR criado"
+fi
+
+echo ""
+
+###############################################################################
+# Build and Push Docker Image
+###############################################################################
+
+log_info "Fazendo build da imagem Docker..."
+
+docker build -t "${REPOSITORY_NAME}:latest" . > /dev/null
+
+log_success "Build da imagem concluído"
+echo ""
+
+log_info "Fazendo login no ECR..."
+
+aws ecr get-login-password --region "$AWS_REGION" | \
+    docker login --username AWS --password-stdin "${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com" > /dev/null
+
+log_success "Login no ECR realizado"
+echo ""
+
+log_info "Fazendo push da imagem para ECR..."
+
+docker tag "${REPOSITORY_NAME}:latest" "${ECR_URL}:latest"
+docker push "${ECR_URL}:latest" > /dev/null
+
+log_success "Imagem enviada para ECR"
+echo ""
+
+###############################################################################
+# Terraform Initialization
+###############################################################################
+
+log_info "Inicializando Terraform..."
+
+terraform init > /dev/null
+
+log_success "Terraform inicializado"
+echo ""
+
+###############################################################################
+# Terraform Apply
+###############################################################################
+
+log_info "Aplicando infraestrutura com Terraform..."
+log_warning "Isso pode levar alguns minutos..."
+echo ""
+
+terraform apply \
+    -var="environment=${ENVIRONMENT}" \
+    -var="aws_region=${AWS_REGION}" \
+    -var="lambda_image_uri=${ECR_URL}:latest" \
+    -auto-approve
+
+log_success "Infraestrutura criada com sucesso!"
+echo ""
+
+###############################################################################
+# Get Outputs
+###############################################################################
+
+log_info "Coletando informações da infraestrutura..."
+echo ""
+
+INPUT_BUCKET=$(terraform output -raw input_bucket_name)
+OUTPUT_BUCKET=$(terraform output -raw output_bucket_name)
+LAMBDA_FUNCTION=$(terraform output -raw lambda_function_name)
+LOG_GROUP=$(terraform output -raw log_group_name)
+
+###############################################################################
+# Summary
+###############################################################################
+
+cat << EOF
+
+${GREEN}╔═══════════════════════════════════════════════════════════════╗
+║                    SETUP CONCLUÍDO!                           ║
+╚═══════════════════════════════════════════════════════════════╝${NC}
+
+${BLUE}Informações da Infraestrutura:${NC}
+────────────────────────────────────────────────────────────────
+  Environment:       ${ENVIRONMENT}
+  Region:            ${AWS_REGION}
+  Account ID:        ${AWS_ACCOUNT_ID}
+
+${BLUE}Recursos Criados:${NC}
+────────────────────────────────────────────────────────────────
+  Input Bucket:      ${INPUT_BUCKET}
+  Output Bucket:     ${OUTPUT_BUCKET}
+  Lambda Function:   ${LAMBDA_FUNCTION}
+  ECR Repository:    ${ECR_URL}
+  CloudWatch Logs:   ${LOG_GROUP}
+
+${BLUE}Próximos Passos:${NC}
+────────────────────────────────────────────────────────────────
+
+1. Testar a aplicação:
+   ${GREEN}make test${NC}
+
+2. Fazer upload de um CSV:
+   ${GREEN}aws s3 cp seu-arquivo.csv s3://${INPUT_BUCKET}/${NC}
+
+3. Visualizar logs:
+   ${GREEN}make logs${NC}
+
+4. Ver outputs:
+   ${GREEN}terraform output${NC}
+
+${BLUE}Comandos Úteis:${NC}
+────────────────────────────────────────────────────────────────
+  Upload CSV:        aws s3 cp file.csv s3://${INPUT_BUCKET}/
+  Download JSON:     aws s3 cp s3://${OUTPUT_BUCKET}/file.json .
+  Ver logs:          aws logs tail ${LOG_GROUP} --follow
+  Atualizar Lambda:  make update-lambda
+  Destruir tudo:     make destroy
+
+${BLUE}Documentação:${NC}
+────────────────────────────────────────────────────────────────
+  README:            README.md
+  Arquitetura:       ARCHITECTURE.md
+
+${GREEN}✓ Tudo pronto! Happy coding! 🚀${NC}
+
+EOF
+
+###############################################################################
+# Optional: Run Integration Test
+###############################################################################
+
+read -p "Deseja executar um teste de integração agora? (s/n): " -n 1 -r
+echo
+if [[ $REPLY =~ ^[SsYy]$ ]]; then
+    log_info "Executando teste de integração..."
+    
+    # Create test CSV
+    cat > test.csv << EOF
+codigoFipe,marca,modelo,anoModelo,mesReferencia,anoReferencia,valor
+001,TestMarca,TestModelo,2020,01,2020,50000.00
+002,TestMarca,TestModelo2,2020,02,2020,60000.00
+003,OutraMarca,OutroModelo,2021,01,2021,70000.00
+EOF
+    
+    log_info "Fazendo upload do arquivo de teste..."
+    aws s3 cp test.csv "s3://${INPUT_BUCKET}/test.csv"
+    
+    log_info "Aguardando processamento (15 segundos)..."
+    sleep 15
+    
+    log_info "Verificando resultado..."
+    if aws s3 ls "s3://${OUTPUT_BUCKET}/test_preco_medio.json" &> /dev/null; then
+        log_success "Arquivo processado com sucesso!"
+        
+        log_info "Conteúdo do JSON:"
+        aws s3 cp "s3://${OUTPUT_BUCKET}/test_preco_medio.json" - | jq .
+        
+        # Cleanup
+        aws s3 rm "s3://${INPUT_BUCKET}/test.csv" &> /dev/null
+        aws s3 rm "s3://${OUTPUT_BUCKET}/test_preco_medio.json" &> /dev/null
+        rm test.csv
+        
+        log_success "Teste concluído e arquivos limpos!"
+    else
+        log_error "Arquivo de saída não encontrado. Verifique os logs:"
+        echo "  aws logs tail ${LOG_GROUP} --follow"
+    fi
+fi
+
+echo ""
+log_success "Setup finalizado!"
