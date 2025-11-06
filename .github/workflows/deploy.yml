@@ -50,54 +50,6 @@ jobs:
         run: |
           cd terraform
           terraform apply -auto-approve -var="project_name=csv-processor" -var="environment=prod"
-      name: ${{ github.ref == 'refs/heads/main' && 'production' || 'development' }}
-    
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-      
-      - name: Configure AWS credentials
-        uses: aws-actions/configure-aws-credentials@v4
-        with:
-          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
-          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-          aws-region: ${{ env.AWS_REGION }}
-      
-      - name: Setup Terraform
-        uses: hashicorp/setup-terraform@v3
-        with:
-          terraform_version: ${{ env.TERRAFORM_VERSION }}
-      
-      - name: Determine environment
-        id: env
-        run: |
-          if [ "${{ github.event_name }}" == "workflow_dispatch" ]; then
-            echo "environment=${{ inputs.environment }}" >> $GITHUB_OUTPUT
-          elif [ "${{ github.ref }}" == "refs/heads/main" ]; then
-            echo "environment=prod" >> $GITHUB_OUTPUT
-          else
-            echo "environment=dev" >> $GITHUB_OUTPUT
-          fi
-      
-      - name: Terraform Init
-        run: terraform init
-        env:
-          TF_VAR_environment: ${{ steps.env.outputs.environment }}
-      
-      - name: Terraform Plan
-        id: plan
-        run: terraform plan -out=tfplan -var="environment=${{ steps.env.outputs.environment }}"
-        env:
-          TF_VAR_aws_region: ${{ env.AWS_REGION }}
-          TF_VAR_lambda_image_uri: ${{ needs.build.outputs.image_tag }}
-      
-      - name: Terraform Apply
-        if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/develop' || github.event_name == 'workflow_dispatch'
-        run: terraform apply -auto-approve tfplan
-      
-      - name: Get Terraform Outputs
-        id: tf-outputs
-        run: |
           echo "input_bucket=$(terraform output -raw input_bucket_name)" >> $GITHUB_OUTPUT
           echo "output_bucket=$(terraform output -raw output_bucket_name)" >> $GITHUB_OUTPUT
           echo "lambda_function=$(terraform output -raw lambda_function_name)" >> $GITHUB_OUTPUT
