@@ -13,6 +13,10 @@ jobs:
   deploy:
     name: Deploy
     runs-on: ubuntu-latest
+    outputs:
+      input_bucket: ${{ steps.tf-outputs.outputs.input_bucket }}
+      output_bucket: ${{ steps.tf-outputs.outputs.output_bucket }}
+      lambda_function: ${{ steps.tf-outputs.outputs.lambda_function }}
     
     steps:
       - name: Checkout code
@@ -47,42 +51,28 @@ jobs:
 
       - name: Terraform Apply
         if: github.ref == 'refs/heads/main'
+        id: tf-outputs
         run: |
           cd terraform
           terraform apply -auto-approve -var="project_name=csv-processor" -var="environment=prod"
           echo "input_bucket=$(terraform output -raw input_bucket_name)" >> $GITHUB_OUTPUT
           echo "output_bucket=$(terraform output -raw output_bucket_name)" >> $GITHUB_OUTPUT
           echo "lambda_function=$(terraform output -raw lambda_function_name)" >> $GITHUB_OUTPUT
-      
-      - name: Update Lambda Function
-        run: |
-          aws lambda update-function-code \
-            --function-name ${{ steps.tf-outputs.outputs.lambda_function }} \
-            --image-uri ${{ needs.build.outputs.image_tag }} \
-            --region ${{ env.AWS_REGION }}
-      
-      - name: Wait for Lambda Update
-        run: |
-          aws lambda wait function-updated \
-            --function-name ${{ steps.tf-outputs.outputs.lambda_function }} \
-            --region ${{ env.AWS_REGION }}
-      
+
       - name: Create deployment summary
         run: |
           echo "## Deployment Summary" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "**Environment:** ${{ steps.env.outputs.environment }}" >> $GITHUB_STEP_SUMMARY
           echo "**Region:** ${{ env.AWS_REGION }}" >> $GITHUB_STEP_SUMMARY
           echo "**Input Bucket:** ${{ steps.tf-outputs.outputs.input_bucket }}" >> $GITHUB_STEP_SUMMARY
           echo "**Output Bucket:** ${{ steps.tf-outputs.outputs.output_bucket }}" >> $GITHUB_STEP_SUMMARY
           echo "**Lambda Function:** ${{ steps.tf-outputs.outputs.lambda_function }}" >> $GITHUB_STEP_SUMMARY
-          echo "**Docker Image:** ${{ needs.build.outputs.image_tag }}" >> $GITHUB_STEP_SUMMARY
 
   integration-test:
     name: Integration Tests
     runs-on: ubuntu-latest
-    needs: deploy-infrastructure
-    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
+    needs: deploy
+    if: github.ref == 'refs/heads/main'
     
     steps:
       - name: Checkout code
@@ -94,26 +84,32 @@ jobs:
           aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-region: ${{ env.AWS_REGION }}
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TERRAFORM_VERSION }}
+
+      - name: Terraform Init
+        run: |
+          cd terraform
+          terraform init
       
       - name: Upload test CSV
         run: |
-          BUCKET=$(terraform output -raw input_bucket_name)
           echo "codigoFipe,marca,modelo,anoModelo,mesReferencia,anoReferencia,valor" > test.csv
           echo "001,TestBrand,TestModel,2020,01,2020,50000.00" >> test.csv
-          aws s3 cp test.csv s3://$BUCKET/test.csv
+          aws s3 cp test.csv s3://${{ needs.deploy.outputs.input_bucket }}/test.csv
       
       - name: Wait for processing
         run: sleep 30
       
       - name: Check output
         run: |
-          OUTPUT_BUCKET=$(terraform output -raw output_bucket_name)
-          aws s3 ls s3://$OUTPUT_BUCKET/
+          aws s3 ls s3://${{ needs.deploy.outputs.output_bucket }}/
       
       - name: Cleanup test files
         if: always()
         run: |
-          INPUT_BUCKET=$(terraform output -raw input_bucket_name)
-          OUTPUT_BUCKET=$(terraform output -raw output_bucket_name)
-          aws s3 rm s3://$INPUT_BUCKET/test.csv || true
-          aws s3 rm s3://$OUTPUT_BUCKET/test_preco_medio.json || true
+          aws s3 rm s3://${{ needs.deploy.outputs.input_bucket }}/test.csv || true
+          aws s3 rm s3://${{ needs.deploy.outputs.output_bucket }}/test.json || true
