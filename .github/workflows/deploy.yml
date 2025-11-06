@@ -50,54 +50,6 @@ jobs:
         run: |
           cd terraform
           terraform apply -auto-approve -var="project_name=csv-processor" -var="environment=prod"
-            echo "environment=dev" >> $GITHUB_OUTPUT
-          fi
-      
-      - name: Docker metadata
-        id: meta
-        uses: docker/metadata-action@v5
-        with:
-          images: ${{ steps.login-ecr.outputs.registry }}/csv-processor-${{ steps.env.outputs.environment }}
-          tags: |
-            type=ref,event=branch
-            type=sha,prefix={{branch}}-
-            type=raw,value=latest,enable={{is_default_branch}}
-            type=semver,pattern={{version}}
-            type=semver,pattern={{major}}.{{minor}}
-      
-      - name: Build and push Docker image
-        id: build
-        uses: docker/build-push-action@v5
-        with:
-          context: .
-          push: true
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
-          platforms: linux/amd64
-      
-      - name: Image scan (Trivy)
-        uses: aquasecurity/trivy-action@master
-        with:
-          image-ref: ${{ steps.login-ecr.outputs.registry }}/csv-processor-${{ steps.env.outputs.environment }}:latest
-          format: 'sarif'
-          output: 'trivy-results.sarif'
-        continue-on-error: true
-      
-      - name: Upload Trivy results to GitHub Security
-        uses: github/codeql-action/upload-sarif@v3
-        with:
-          sarif_file: 'trivy-results.sarif'
-        continue-on-error: true
-
-  deploy-infrastructure:
-    name: Deploy Infrastructure
-    runs-on: ubuntu-latest
-    needs: build
-    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
-    
-    environment:
       name: ${{ github.ref == 'refs/heads/main' && 'production' || 'development' }}
     
     steps:
