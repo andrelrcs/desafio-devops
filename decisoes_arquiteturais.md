@@ -157,17 +157,6 @@ Para 1000 processamentos/mês:
 
 ---
 
-## 7. Melhorias Futuras
-
-1. **Dead Letter Queue (DLQ)**: Para reprocessar falhas
-2. **Step Functions**: Orquestrar múltiplas transformações
-3. **Lambda Layers**: Compartilhar dependências
-4. **S3 Batch Operations**: Processar múltiplos arquivos em paralelo
-5. **API Gateway**: Trigger manual via API REST
-6. **EventBridge**: Scheduling e event routing avançado
-
----
-
 ## Conclusão
 
 A escolha do **AWS Lambda** é ideal para esta aplicação devido ao:
